@@ -65,7 +65,7 @@ export const demoCourses: Course[] = [
 ];
 
 export const createInitialState = (): PersistedState => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   courses: structuredClone(demoCourses),
   attempts: [
     {
@@ -99,6 +99,7 @@ export const createInitialState = (): PersistedState => ({
       ]
     }
   ],
+  repractices: {},
   progress: {
     'airport-01': {
       answers: { 'airport-01-s1': 'I would like to check in for my flight to London' },

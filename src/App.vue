@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
+import { courseForLesson, exportRecords, lessonById, lessonNeedsWorkCount, persist, repracticesFor, saveAttempt, saveRepractice, setDownloaded, state, updateTokenClassification } from './store';
 import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
-import { compareSentence, scoreAttempt, segmentText } from './utils';
+import { compareSentence, scoreAttempt, scoreTokens, segmentText, sentenceMastery } from './utils';
 
 const view = ref<PracticeView>(state.activeLessonId ? 'practice' : 'library');
 const online = ref(navigator.onLine);
@@ -13,6 +13,7 @@ const segmentStart = ref(0);
 const segmentEnd = ref(1);
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const repracticeAnswer = ref('');
 let toastTimer = 0;
 
 const activeLesson = computed(() => lessonById(state.activeLessonId));
@@ -35,6 +36,8 @@ const lessonCompletion = computed(() => {
 });
 const resultAttempt = computed(() => state.attempts.find((attempt) => attempt.id === resultAttemptId.value));
 const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[selectedResultSentence.value]);
+const resultSentenceRepractices = computed(() => resultSentence.value ? repracticesFor(resultSentence.value.sentenceId) : []);
+const resultSentenceMastery = computed(() => sentenceMastery(resultSentenceRepractices.value));
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
 const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
 const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
@@ -141,6 +144,7 @@ function submitLesson() {
   saveAttempt(attempt);
   resultAttemptId.value = attempt.id;
   selectedResultSentence.value = 0;
+  repracticeAnswer.value = '';
   syncSegment();
   view.value = 'result';
   persist();
@@ -174,7 +178,37 @@ function replaySegment() {
 
 function selectResultSentence(index: number) {
   selectedResultSentence.value = index;
+  repracticeAnswer.value = '';
   syncSegment();
+}
+
+function masteryOf(sentenceId: string) {
+  return sentenceMastery(repracticesFor(sentenceId));
+}
+
+function submitRepractice() {
+  const attempt = resultAttempt.value;
+  const sentence = resultSentence.value;
+  if (!attempt || !sentence) return;
+  const answer = repracticeAnswer.value.trim();
+  if (!answer) {
+    notify('请先输入重练答案');
+    return;
+  }
+  const tokens = compareSentence(sentence.source, answer);
+  saveRepractice({
+    id: `repractice-${Date.now()}`,
+    lessonId: attempt.lessonId,
+    sentenceId: sentence.sentenceId,
+    source: sentence.source,
+    answer,
+    tokens,
+    score: scoreTokens(tokens),
+    practicedAt: new Date().toISOString()
+  });
+  persist();
+  const status = masteryOf(sentence.sentenceId);
+  notify(status === 'mastered' ? '连续两次满分，本句已掌握' : '重练结果已记录，继续加油');
 }
 
 function saveClassification(attemptId: string, sentenceId: string, tokenIndex: number, category: ErrorCategory, reason: string) {
@@ -283,7 +317,11 @@ onBeforeUnmount(() => {
             <span class="level-badge">{{ course.level }}</span>
           </div>
           <div v-for="lesson in course.lessons" :key="lesson.id" class="lesson-row">
-            <div><h4>{{ lesson.title }}</h4><p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p></div>
+            <div>
+              <h4>{{ lesson.title }}</h4>
+              <p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p>
+              <span v-if="lessonNeedsWorkCount(lesson.id)" class="needs-work-chip">待巩固 {{ lessonNeedsWorkCount(lesson.id) }} 句</span>
+            </div>
             <div class="lesson-actions">
               <var-switch :model-value="lesson.downloaded" @update:model-value="setDownloaded(lesson.id, $event as boolean)" />
               <var-button type="primary" size="small" @click="startLesson(lesson)">{{ lesson.downloaded ? '继续' : '开始' }}</var-button>
@@ -353,7 +391,7 @@ onBeforeUnmount(() => {
         </section>
 
         <div class="sentence-picker">
-          <button v-for="(attempt, index) in resultAttempt.sentenceAttempts" :key="attempt.sentenceId" class="sentence-dot" :class="{ active: index === selectedResultSentence }" @click="selectResultSentence(index)">{{ index + 1 }}</button>
+          <button v-for="(attempt, index) in resultAttempt.sentenceAttempts" :key="attempt.sentenceId" class="sentence-dot" :class="{ active: index === selectedResultSentence, mastered: masteryOf(attempt.sentenceId) === 'mastered', 'needs-work': masteryOf(attempt.sentenceId) === 'needsWork' }" :aria-label="`查看第 ${index + 1} 句结果`" @click="selectResultSentence(index)">{{ index + 1 }}</button>
         </div>
 
         <section v-if="resultSentence" class="panel token-panel">
@@ -388,6 +426,35 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+        </section>
+
+        <section v-if="resultSentence" class="panel repractice-panel">
+          <div class="detail-head">
+            <div><h3>逐句重练</h3><p>重练只记录掌握进度，不会改动本次成绩与教师反馈</p></div>
+            <span v-if="resultSentenceMastery" class="mastery-chip" :class="resultSentenceMastery === 'mastered' ? 'mastered' : 'needs-work'">{{ resultSentenceMastery === 'mastered' ? '已掌握' : '待巩固' }}</span>
+          </div>
+          <textarea v-model="repracticeAnswer" class="answer-box repractice-box" :aria-label="`第 ${selectedResultSentence + 1} 句重练答案`" placeholder="再听一遍，重新输入这句话..." @keydown.ctrl.enter="submitRepractice" @keydown.meta.enter="submitRepractice"></textarea>
+          <div class="practice-actions">
+            <var-button block type="default" variant="outline" @click="replay(resultSentence.source)">再听本句</var-button>
+            <var-button block type="primary" @click="submitRepractice">提交重练</var-button>
+          </div>
+
+          <template v-if="resultSentenceRepractices.length">
+            <div class="dictation-label"><strong>最近重练</strong><span>保留最近 3 次 · 连续两次满分即掌握</span></div>
+            <div v-for="(record, index) in resultSentenceRepractices" :key="record.id" class="repractice-record">
+              <div class="repractice-head">
+                <span class="repractice-score" :class="{ perfect: record.score === 100 }">{{ record.score }} 分</span>
+                <span class="repractice-time">{{ index === 0 ? '最新 · ' : '' }}{{ formatDate(record.practicedAt) }}</span>
+              </div>
+              <p class="repractice-answer">{{ record.answer }}</p>
+              <div class="word-list">
+                <button v-for="token in record.tokens" :key="`${record.id}-${token.index}`" class="word-chip" :class="{ wrong: !token.correct }" :title="token.correct ? '点击重听' : `你的答案：${token.actual || '未输入'}`" @click="replay(token.expected || token.actual, 0.7)">
+                  {{ token.expected || `[+${token.actual}]` }}<small v-if="!token.correct">{{ token.actual || '漏词' }}</small>
+                </button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="repractice-empty">还没有重练记录。针对错句多练几次，连续两次满分会标记为已掌握。</div>
         </section>
 
         <section v-if="resultAttempt.teacherFeedback" class="panel"><div class="feedback-card"><strong>教师反馈</strong><p>{{ resultAttempt.teacherFeedback }}</p></div></section>

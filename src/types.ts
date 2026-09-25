@@ -57,6 +57,19 @@ export interface PracticeAttempt {
   teacherFeedback: string;
 }
 
+export interface SentenceRepractice {
+  id: string;
+  lessonId: string;
+  sentenceId: string;
+  source: string;
+  answer: string;
+  tokens: TokenResult[];
+  score: number;
+  practicedAt: string;
+}
+
+export type MasteryStatus = 'mastered' | 'needsWork';
+
 export interface LessonProgress {
   answers: Record<string, string>;
   activeSentenceId: string;
@@ -64,9 +77,10 @@ export interface LessonProgress {
 }
 
 export interface PersistedState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   courses: Course[];
   attempts: PracticeAttempt[];
+  repractices: Record<string, SentenceRepractice[]>;
   progress: Record<string, LessonProgress>;
   activeLessonId: string;
   activeSentenceId: string;

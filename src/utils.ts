@@ -1,4 +1,4 @@
-import type { SentenceAttempt, TextSegment, TokenResult } from './types';
+import type { MasteryStatus, SentenceAttempt, SentenceRepractice, TextSegment, TokenResult } from './types';
 
 export const segmentText = (text: string): TextSegment[] => {
   const matches = text.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*|[^\s\p{L}\p{N}]+/gu) ?? [];
@@ -81,4 +81,20 @@ export function scoreAttempt(sentenceAttempts: SentenceAttempt[]): number {
   if (!totals.length) return 0;
   const correct = totals.filter((token) => token.correct).length;
   return Math.max(0, Math.round((correct / totals.length) * 100));
+}
+
+export function scoreTokens(tokens: TokenResult[]): number {
+  if (!tokens.length) return 0;
+  const correct = tokens.filter((token) => token.correct).length;
+  return Math.max(0, Math.round((correct / tokens.length) * 100));
+}
+
+// Repractices are stored newest-first; mastery requires two consecutive
+// full marks, and any latest score below 100 drops the sentence back to
+// needsWork.
+export function sentenceMastery(repractices: SentenceRepractice[]): MasteryStatus | null {
+  if (!repractices.length) return null;
+  const [latest, previous] = repractices;
+  if (latest.score === 100 && previous?.score === 100) return 'mastered';
+  return 'needsWork';
 }
