@@ -1,4 +1,5 @@
-import type { Course, PersistedState } from './types';
+import type { Course, PersistedState, SentenceAttempt, SentenceRetry } from './types';
+import { scoreAttempt, scoreSentence } from './utils';
 
 export const demoCourses: Course[] = [
   {
@@ -64,51 +65,80 @@ export const demoCourses: Course[] = [
   }
 ];
 
-export const createInitialState = (): PersistedState => ({
-  schemaVersion: 1,
-  courses: structuredClone(demoCourses),
-  attempts: [
-    {
-      id: 'demo-attempt-1',
-      lessonId: 'airport-01',
-      lessonTitle: '办理值机',
-      courseTitle: '日常英语 · 机场与出行',
-      submittedAt: '2026-09-24T10:20:00.000Z',
-      score: 84,
-      teacherFeedback: '连读细节明显进步。注意 bags are 的词尾衔接，再听一遍第二句。',
-      sentenceAttempts: [
-        {
-          sentenceId: 'airport-01-s1',
-          source: 'I would like to check in for my flight to London.',
-          answer: 'I would like to check in for my flight to London',
-          score: 94,
-          tokens: [
-            { index: 0, expected: 'I', actual: 'I', correct: true, category: 'unclassified', reason: '' },
-            { index: 1, expected: 'would', actual: 'would', correct: true, category: 'unclassified', reason: '' },
-            { index: 2, expected: 'like', actual: 'like', correct: true, category: 'unclassified', reason: '' },
-            { index: 3, expected: 'to', actual: 'to', correct: true, category: 'unclassified', reason: '' },
-            { index: 4, expected: 'check', actual: 'check', correct: true, category: 'unclassified', reason: '' },
-            { index: 5, expected: 'in', actual: 'in', correct: true, category: 'unclassified', reason: '' },
-            { index: 6, expected: 'for', actual: 'for', correct: true, category: 'unclassified', reason: '' },
-            { index: 7, expected: 'my', actual: 'my', correct: true, category: 'unclassified', reason: '' },
-            { index: 8, expected: 'flight', actual: 'flight', correct: true, category: 'unclassified', reason: '' },
-            { index: 9, expected: 'to', actual: 'to', correct: true, category: 'unclassified', reason: '' },
-            { index: 10, expected: 'London', actual: 'London', correct: true, category: 'unclassified', reason: '' }
-          ]
-        }
+/** 用逐词评分规则构建演示单句结果，保证分数与 token 一致。 */
+function buildSentenceAttempt(sentenceId: string, source: string, answer: string, retryAnswers: Array<{ answer: string; at: string }> = []): SentenceAttempt {
+  const retries: SentenceRetry[] = retryAnswers.map((item, index) => ({
+    id: `demo-retry-${sentenceId}-${index}`,
+    source,
+    answer: item.answer,
+    ...scoreSentence(source, item.answer),
+    retriedAt: item.at
+  }));
+  return { sentenceId, source, answer, ...scoreSentence(source, answer), retries };
+}
+
+export const createInitialState = (): PersistedState => {
+  const sentenceAttempts = [
+    // 最近两次重练均为满分 → 已掌握（三次记录新到旧）
+    buildSentenceAttempt(
+      'airport-01-s1',
+      'I would like to check in for my flight to London.',
+      'I would like to check in for my flight to London',
+      [
+        { answer: 'I would like to check in for my flight to London.', at: '2026-09-24T11:20:00.000Z' },
+        { answer: 'I would like to check in for my flight to London.', at: '2026-09-24T11:05:00.000Z' },
+        { answer: 'I would like to check in for my fly to London.', at: '2026-09-24T10:50:00.000Z' }
       ]
-    }
-  ],
-  progress: {
-    'airport-01': {
-      answers: { 'airport-01-s1': 'I would like to check in for my flight to London' },
-      activeSentenceId: 'airport-01-s2',
-      updatedAt: '2026-09-24T10:10:00.000Z'
-    }
-  },
-  activeLessonId: '',
-  activeSentenceId: '',
-  theme: 'light',
-  fontScale: 1,
-  role: 'learner'
-});
+    ),
+    // 最近一次重练仍未满分 → 待巩固
+    buildSentenceAttempt(
+      'airport-01-s2',
+      'Could I have a window seat, please?',
+      'Could I have a wind seat please',
+      [
+        { answer: 'Could I have a window seat please?', at: '2026-09-24T11:10:00.000Z' }
+      ]
+    ),
+    // 原提交错误且未开始重练 → 待巩固
+    buildSentenceAttempt(
+      'airport-01-s3',
+      'How many bags are you checking in today?',
+      'How many bags are you check in today?'
+    ),
+    // 原提交即满分、未重练 → 不计待巩固
+    buildSentenceAttempt(
+      'airport-01-s4',
+      'Your gate is B twelve and boarding starts at six thirty.',
+      'Your gate is B twelve and boarding starts at six thirty.'
+    )
+  ];
+
+  return {
+    schemaVersion: 2,
+    courses: structuredClone(demoCourses),
+    attempts: [
+      {
+        id: 'demo-attempt-1',
+        lessonId: 'airport-01',
+        lessonTitle: '办理值机',
+        courseTitle: '日常英语 · 机场与出行',
+        submittedAt: '2026-09-24T10:20:00.000Z',
+        score: scoreAttempt(sentenceAttempts),
+        teacherFeedback: '连读细节明显进步。注意 bags are 的词尾衔接，再听一遍第三句。',
+        sentenceAttempts
+      }
+    ],
+    progress: {
+      'airport-01': {
+        answers: { 'airport-01-s1': 'I would like to check in for my flight to London' },
+        activeSentenceId: 'airport-01-s2',
+        updatedAt: '2026-09-24T10:10:00.000Z'
+      }
+    },
+    activeLessonId: '',
+    activeSentenceId: '',
+    theme: 'light',
+    fontScale: 1,
+    role: 'learner'
+  };
+};

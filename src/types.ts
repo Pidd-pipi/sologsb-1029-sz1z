@@ -38,12 +38,24 @@ export interface TokenResult {
   reason: string;
 }
 
+export interface SentenceRetry {
+  id: string;
+  source: string;
+  answer: string;
+  tokens: TokenResult[];
+  score: number;
+  retriedAt: string;
+}
+
+export type MasteryStatus = 'mastered' | 'pending' | 'untracked';
+
 export interface SentenceAttempt {
   sentenceId: string;
   source: string;
   answer: string;
   tokens: TokenResult[];
   score: number;
+  retries: SentenceRetry[];
 }
 
 export interface PracticeAttempt {
@@ -64,7 +76,7 @@ export interface LessonProgress {
 }
 
 export interface PersistedState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   courses: Course[];
   attempts: PracticeAttempt[];
   progress: Record<string, LessonProgress>;

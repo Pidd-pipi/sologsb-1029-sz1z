@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
+import { courseForLesson, addSentenceRetry, exportRecords, latestAttemptForLesson, lessonById, pendingSentenceCount, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
 import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
-import { compareSentence, scoreAttempt, segmentText } from './utils';
+import { isMastered, MAX_SENTENCE_RETRIES, scoreAttempt, scoreSentence, segmentText } from './utils';
 
 const view = ref<PracticeView>(state.activeLessonId ? 'practice' : 'library');
 const online = ref(navigator.onLine);
@@ -13,6 +13,7 @@ const segmentStart = ref(0);
 const segmentEnd = ref(1);
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const retryAnswer = ref('');
 let toastTimer = 0;
 
 const activeLesson = computed(() => lessonById(state.activeLessonId));
@@ -124,9 +125,7 @@ function submitLesson() {
   const sentenceAttempts = lesson.sentences.map((sentence) => {
     const source = sentence.text;
     const answer = progress?.answers[sentence.id] ?? '';
-    const tokens = compareSentence(source, answer);
-    const correct = tokens.filter((token) => token.correct).length;
-    return { sentenceId: sentence.id, source, answer, tokens, score: tokens.length ? Math.round((correct / tokens.length) * 100) : 0 };
+    return { sentenceId: sentence.id, source, answer, ...scoreSentence(source, answer), retries: [] };
   });
   const attempt: PracticeAttempt = {
     id: `attempt-${Date.now()}`,
@@ -175,6 +174,32 @@ function replaySegment() {
 function selectResultSentence(index: number) {
   selectedResultSentence.value = index;
   syncSegment();
+}
+
+// 切换到某句时，重练输入框默认带出最近一次重练的答案，方便在其基础上修改。
+watch(resultSentence, (sentence) => {
+  retryAnswer.value = sentence?.retries[0]?.answer ?? '';
+});
+
+function submitRetry() {
+  const attempt = resultAttempt.value;
+  const sentence = resultSentence.value;
+  if (!attempt || !sentence) return;
+  const answer = retryAnswer.value.trim();
+  if (!answer) {
+    notify('请先输入重练答案');
+    return;
+  }
+  const retry = addSentenceRetry(attempt.id, sentence.sentenceId, answer);
+  persist();
+  if (retry) {
+    notify(retry.score >= 100 ? '本句满分，再连续满分一次即掌握' : `重练完成，本句 ${retry.score} 分`);
+    retryAnswer.value = answer;
+  }
+}
+
+function sentenceMastered(sentence: PracticeAttempt['sentenceAttempts'][number]): boolean {
+  return isMastered(sentence.retries);
 }
 
 function saveClassification(attemptId: string, sentenceId: string, tokenIndex: number, category: ErrorCategory, reason: string) {
@@ -283,7 +308,12 @@ onBeforeUnmount(() => {
             <span class="level-badge">{{ course.level }}</span>
           </div>
           <div v-for="lesson in course.lessons" :key="lesson.id" class="lesson-row">
-            <div><h4>{{ lesson.title }}</h4><p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p></div>
+            <div>
+              <h4>{{ lesson.title }}</h4>
+              <p>{{ lesson.subtitle }} · {{ lesson.sentences.length }} 句 · 约 {{ lesson.estimatedMinutes }} 分钟</p>
+              <p v-if="pendingSentenceCount(lesson.id) > 0" class="lesson-status"><span class="review-chip pending">待巩固 {{ pendingSentenceCount(lesson.id) }} 句</span></p>
+              <p v-else-if="latestAttemptForLesson(lesson.id)" class="lesson-status"><span class="review-chip mastered">本课句子已全部掌握</span></p>
+            </div>
             <div class="lesson-actions">
               <var-switch :model-value="lesson.downloaded" @update:model-value="setDownloaded(lesson.id, $event as boolean)" />
               <var-button type="primary" size="small" @click="startLesson(lesson)">{{ lesson.downloaded ? '继续' : '开始' }}</var-button>
@@ -353,13 +383,21 @@ onBeforeUnmount(() => {
         </section>
 
         <div class="sentence-picker">
-          <button v-for="(attempt, index) in resultAttempt.sentenceAttempts" :key="attempt.sentenceId" class="sentence-dot" :class="{ active: index === selectedResultSentence }" @click="selectResultSentence(index)">{{ index + 1 }}</button>
+          <button v-for="(attempt, index) in resultAttempt.sentenceAttempts" :key="attempt.sentenceId" class="sentence-dot" :class="{ active: index === selectedResultSentence, mastered: sentenceMastered(attempt), pending: !sentenceMastered(attempt) && (attempt.retries.length > 0 || attempt.score < 100) }" :aria-label="`查看第 ${index + 1} 句结果`" @click="selectResultSentence(index)">{{ index + 1 }}</button>
         </div>
 
         <section v-if="resultSentence" class="panel token-panel">
           <div class="detail-head">
-            <div><h3>第 {{ selectedResultSentence + 1 }} 句逐词结果</h3><p>{{ resultSentence.source }}</p></div>
-            <span class="history-score">{{ resultSentence.score }}%</span>
+            <div>
+              <h3>第 {{ selectedResultSentence + 1 }} 句逐词结果</h3>
+              <p>{{ resultSentence.source }}</p>
+              <p class="rule-note">原课程得分 {{ resultSentence.score }}%<span v-if="resultSentence.retries.length"> · 最近重练 {{ resultSentence.retries[0].score }}%</span></p>
+            </div>
+            <div class="head-side">
+              <span class="history-score">{{ resultSentence.score }}%</span>
+              <span v-if="sentenceMastered(resultSentence)" class="review-chip mastered">已掌握</span>
+              <span v-else class="review-chip pending">待巩固</span>
+            </div>
           </div>
           <div class="word-list">
             <button v-for="token in resultSentence.tokens" :key="`${token.index}-${token.expected}-${token.actual}`" class="word-chip" :class="{ wrong: !token.correct }" :title="token.correct ? '点击重听' : `你的答案：${token.actual || '未输入'}`" @click="replay(token.expected || token.actual, 0.7)">
@@ -386,6 +424,37 @@ onBeforeUnmount(() => {
                 </select>
                 <input :value="token.reason" placeholder="记录原因，如连读、词尾未听清" @change="saveClassification(resultAttempt.id, resultSentence.sentenceId, token.index, token.category, ($event.target as HTMLInputElement).value)" />
               </div>
+            </div>
+          </div>
+
+          <div class="retry-block">
+            <div class="dictation-label">
+              <strong>逐句重练</strong>
+              <span>单句评分沿用逐词规则 · 仅留最近 {{ MAX_SENTENCE_RETRIES }} 次</span>
+            </div>
+            <p class="rule-note">连续两次重练满分显示「已掌握」；最近一次低于满分回到「待巩固」。重练不会改动原课程成绩与教师反馈。</p>
+
+            <div v-if="resultSentence.retries.length" class="retry-list">
+              <div v-for="(retry, retryIndex) in resultSentence.retries" :key="retry.id" class="retry-item" :class="{ latest: retryIndex === 0 }">
+                <div class="retry-head">
+                  <strong>{{ retryIndex === 0 ? '最近一次' : `第 ${resultSentence.retries.length - retryIndex} 近` }}重练</strong>
+                  <span class="retry-meta">{{ formatDate(retry.retriedAt) }}</span>
+                  <span class="retry-score" :class="{ full: retry.score >= 100 }">{{ retry.score }}%</span>
+                </div>
+                <p class="retry-answer">你的答案：{{ retry.answer }}</p>
+                <div class="word-list">
+                  <button v-for="token in retry.tokens" :key="`retry-${retry.id}-${token.index}-${token.expected}-${token.actual}`" class="word-chip" :class="{ wrong: !token.correct }" :title="token.correct ? '点击重听' : `你的答案：${token.actual || '未输入'}`" @click="replay(token.expected || token.actual, 0.7)">
+                    {{ token.expected || `[+${token.actual}]` }}<small v-if="!token.correct">{{ token.actual || '漏词' }}</small>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="retry-empty">还没有重练记录，听一遍后重新输入本句。</div>
+
+            <textarea v-model="retryAnswer" class="answer-box retry-box" :aria-label="`第 ${selectedResultSentence + 1} 句重练答案`" placeholder="重新输入这句话..." @keydown.ctrl.enter="submitRetry" @keydown.meta.enter="submitRetry"></textarea>
+            <div class="practice-actions">
+              <var-button block type="default" variant="outline" @click="replay(resultSentence.source, 0.82)">再听原句</var-button>
+              <var-button block type="primary" @click="submitRetry">提交本句重练</var-button>
             </div>
           </div>
         </section>

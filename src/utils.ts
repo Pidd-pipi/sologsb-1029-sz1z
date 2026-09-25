@@ -1,5 +1,18 @@
 import type { SentenceAttempt, TextSegment, TokenResult } from './types';
 
+/** 每句保留的重练次数上限（新到旧排列）。 */
+export const MAX_SENTENCE_RETRIES = 3;
+
+/** 单句满分阈值：逐词全部正确才算满分。 */
+export const isPerfectScore = (score: number): boolean => score >= 100;
+
+/** 单句评分，沿用提交时的逐词比对规则。 */
+export function scoreSentence(source: string, answer: string): Pick<SentenceAttempt, 'tokens' | 'score'> {
+  const tokens = compareSentence(source, answer);
+  const correct = tokens.filter((token) => token.correct).length;
+  return { tokens, score: tokens.length ? Math.round((correct / tokens.length) * 100) : 0 };
+}
+
 export const segmentText = (text: string): TextSegment[] => {
   const matches = text.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*|[^\s\p{L}\p{N}]+/gu) ?? [];
   return matches.map((display, index) => ({
@@ -74,6 +87,23 @@ export function compareSentence(expected: string, answer: string): TokenResult[]
 
   const result = reversed.reverse();
   return result.map((token, index) => ({ ...token, index }));
+}
+
+/**
+ * 连续两次重练满分才视为已掌握：重练记录按新到旧排列，
+ * 因此最近两次即数组前两位；最近一次低于满分立即回到待巩固。
+ */
+export function isMastered(retries: SentenceAttempt['retries']): boolean {
+  return retries.length >= 2 && isPerfectScore(retries[0].score) && isPerfectScore(retries[1].score);
+}
+
+/**
+ * 是否需要巩固：已掌握的句子不再计入；其余只要开始过重练、
+ * 或原课程提交时该句未满分，都属于待巩固。
+ */
+export function needsConsolidation(sentenceAttempt: SentenceAttempt): boolean {
+  if (isMastered(sentenceAttempt.retries)) return false;
+  return sentenceAttempt.retries.length > 0 || !isPerfectScore(sentenceAttempt.score);
 }
 
 export function scoreAttempt(sentenceAttempts: SentenceAttempt[]): number {
